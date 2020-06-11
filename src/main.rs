@@ -1,11 +1,23 @@
-use std::str::FromStr;
 use std::fmt::{Display, Formatter};
-use std::fmt;
+use std::str::FromStr;
+use std::{fmt, mem};
+
+use cranelift::prelude::*;
+use cranelift_module::{Linkage, Module};
+use cranelift_simplejit::{SimpleJITBackend, SimpleJITBuilder};
 
 #[derive(Debug)]
 enum Expr {
-    Number(u64),
-    Op(Box<Expr>, OpCode, Box<Expr>),
+    Number(isize),
+    Op(Box<Operation>),
+}
+
+#[derive(Debug)]
+enum Operation {
+    Add(Expr, Expr),
+    Sub(Expr, Expr),
+    Mul(Expr, Expr),
+    Div(Expr, Expr),
 }
 
 #[derive(Debug)]
@@ -29,7 +41,7 @@ pub enum OpCode {
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum Token {
-    Int(u64),
+    Int(isize),
     LeftParenthesis,
     RightParenthesis,
     OpCode(OpCode),
@@ -121,7 +133,7 @@ fn lexer_helper(text: &str, mut token_list: Vec<Token>) -> Vec<Token> {
 
 fn lexe_number(text: &str, mut token_list: Vec<Token>) -> Vec<Token> {
     let num = text.chars().take_while(|ch| ch.is_ascii_digit()).count();
-    let token = u64::from_str(text.split_at(num).0).unwrap();
+    let token = isize::from_str(text.split_at(num).0).unwrap();
     token_list.push(Token::Int(token));
     lexer_helper(&text[num..], token_list)
 }
@@ -133,13 +145,30 @@ fn parser(input: &str) -> Ast {
 }
 
 fn parse_expr(token_list: &[Token]) -> (Expr, &[Token]) {
-    let (expr, list) = parse_term(token_list);
+    let (term1, list) = parse_term(token_list);
     return if let Some(Token::OpCode(op)) = list.first() {
-        let (expr2, list2) = parse_expr(&list[1..]);
-        (Expr::Op(Box::new(expr), *op, Box::new(expr2)), list2)
+        let (term2, output_list) = parse_expr(&list[1..]);
+        match op {
+            OpCode::Add => (
+                Expr::Op(Box::new(Operation::Add(term1, term2))),
+                output_list,
+            ),
+            OpCode::Sub => (
+                Expr::Op(Box::new(Operation::Sub(term1, term2))),
+                output_list,
+            ),
+            OpCode::Mul => (
+                Expr::Op(Box::new(Operation::Mul(term1, term2))),
+                output_list,
+            ),
+            OpCode::Div => (
+                Expr::Op(Box::new(Operation::Div(term1, term2))),
+                output_list,
+            ),
+        }
     } else {
-        (expr, list)
-    }
+        (term1, list)
+    };
 }
 
 fn parse_term(token_list: &[Token]) -> (Expr, &[Token]) {
@@ -162,7 +191,71 @@ fn consume(token_type: Token, input: &[Token]) -> &[Token] {
 }
 
 fn main() {
-    println!("{:?}", parser("123 + (3 * 45)"));
+    let expr = parser("123 + (3 * 45)");
+    expr.inner.eval()
+}
+
+impl Expr {
+    pub fn eval(&self) {
+        let builder = SimpleJITBuilder::new(cranelift_module::default_libcall_names());
+        let mut module: Module<SimpleJITBackend> = Module::new(builder);
+        let mut ctx = module.make_context();
+        let int = module.target_config().pointer_type();
+
+        let mut function_builder = FunctionBuilderContext::new();
+        let mut builder = FunctionBuilder::new(&mut ctx.func, &mut function_builder);
+
+        let entry_block = builder.create_block();
+
+        builder.switch_to_block(entry_block);
+        builder.seal_block(entry_block);
+
+        let value = self.translate(&mut builder, int);
+        builder.ins().return_(&[value]);
+
+        ctx.func.signature.returns.push(AbiParam::new(int));
+
+        let id = module
+            .declare_function("eval", Linkage::Export, &ctx.func.signature)
+            .unwrap();
+        module
+            .define_function(id, &mut ctx, &mut codegen::binemit::NullTrapSink {})
+            .unwrap();
+        module.clear_context(&mut ctx);
+        module.finalize_definitions();
+        let code = module.get_finalized_function(id);
+        let foo = unsafe { mem::transmute::<_, fn() -> isize>(code) };
+        let num = foo();
+        dbg!(num);
+    }
+
+    fn translate(&self, builder: &mut FunctionBuilder, int: Type) -> Value {
+        match self {
+            Expr::Number(num) => builder.ins().iconst(int, *num as i64),
+            Expr::Op(op) => match op.as_ref() {
+                Operation::Add(term1, term2) => {
+                    let value1 = term1.translate(builder, int);
+                    let value2 = term2.translate(builder, int);
+                    builder.ins().iadd(value1, value2)
+                }
+                Operation::Sub(term1, term2) => {
+                    let value1 = term1.translate(builder, int);
+                    let value2 = term2.translate(builder, int);
+                    builder.ins().isub(value1, value2)
+                }
+                Operation::Mul(term1, term2) => {
+                    let value1 = term1.translate(builder, int);
+                    let value2 = term2.translate(builder, int);
+                    builder.ins().imul(value1, value2)
+                }
+                Operation::Div(term1, term2) => {
+                    let value1 = term1.translate(builder, int);
+                    let value2 = term2.translate(builder, int);
+                    builder.ins().sdiv(value1, value2)
+                }
+            },
+        }
+    }
 }
 
 impl Display for Token {
@@ -177,7 +270,7 @@ impl Display for Token {
             },
             Token::LeftParenthesis => write!(f, "'('"),
             Token::RightParenthesis => write!(f, "')'"),
-            Token::EOF => write!(f, "'End Of File'")
+            Token::EOF => write!(f, "'End Of File'"),
         }
     }
 }
@@ -215,7 +308,12 @@ mod tests {
     #[test]
     #[should_panic]
     fn invalid_term2() {
-        let list = vec![Token::RightParenthesis, Token::Int(2), Token::OpCode(OpCode::Mul), Token::Int(2)];
+        let list = vec![
+            Token::RightParenthesis,
+            Token::Int(2),
+            Token::OpCode(OpCode::Mul),
+            Token::Int(2),
+        ];
         let (a, b) = parse_expr(&list);
     }
 
@@ -231,7 +329,7 @@ mod tests {
         let (result, remainder) = parse_expr(&list);
         assert!(remainder.is_empty());
         match result {
-            Expr::Number(num) => assert!(num == 1),
+            Expr::Number(num) => assert_eq!(num, 1),
             _ => panic!(),
         }
     }
