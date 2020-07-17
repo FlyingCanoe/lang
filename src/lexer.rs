@@ -8,54 +8,39 @@ pub enum OpCode {
     Div,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Token {
     Int(isize),
+    Keyword(Keyword),
     LeftParenthesis,
     RightParenthesis,
+    AssigmentSymbol,
+    Identifier(String),
     OpCode(OpCode),
-    EOF,
+    NewLine,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub enum Keyword {
+    Let,
 }
 
 impl Token {
-    pub fn same(self, other: Self) -> bool {
-        match self {
-            Token::Int(_) => {
-                if let Token::Int(_) = other {
-                    true
-                } else {
-                    false
-                }
+    /// a helper function that try that convert a ident token to a keyword token if it actually correspond to a keyword.
+    /// It will return None if the conversion is not possible and the token is not already a keyword
+    fn try_ident_to_keyword(&self) -> Option<Keyword> {
+        return if let Token::Identifier(string) = self {
+            let text = string.as_str();
+
+            match text {
+                "let" => Some(Keyword::Let),
+                _ => None,
             }
-            Token::LeftParenthesis => {
-                if let Token::LeftParenthesis = other {
-                    true
-                } else {
-                    false
-                }
-            }
-            Token::RightParenthesis => {
-                if let Token::RightParenthesis = other {
-                    true
-                } else {
-                    false
-                }
-            }
-            Token::OpCode(_) => {
-                if let Token::OpCode(_) = other {
-                    true
-                } else {
-                    false
-                }
-            }
-            Token::EOF => {
-                if let Token::EOF = other {
-                    true
-                } else {
-                    false
-                }
-            }
-        }
+        } else if let Token::Keyword(keyword) = self {
+            Some(*keyword)
+        } else {
+            None
+        };
     }
 }
 
@@ -90,13 +75,19 @@ fn lexer_helper(text: &str, mut token_list: Vec<Token>) -> Vec<Token> {
                 token_list.push(Token::RightParenthesis);
                 lexer_helper(&text[1..], token_list)
             }
+            '=' => {
+                token_list.push(Token::AssigmentSymbol);
+                lexer_helper(&text[1..], token_list)
+            }
             _ if ch.is_ascii_digit() => lexe_number(&text, token_list),
+            _ if ch.is_alphanumeric() => lexe_ident(text, token_list),
+            '\n' => {
+                token_list.push(Token::NewLine);
+                lexer_helper(&text[1..], token_list)
+            }
             _ => lexer_helper(&text[1..], token_list),
         },
-        None => {
-            token_list.push(Token::EOF);
-            token_list
-        }
+        None => token_list,
     }
 }
 
@@ -107,8 +98,22 @@ fn lexe_number(text: &str, mut token_list: Vec<Token>) -> Vec<Token> {
     lexer_helper(&text[num..], token_list)
 }
 
+fn lexe_ident(text: &str, mut token_list: Vec<Token>) -> Vec<Token> {
+    return if let Some(ident) = text.split_whitespace().next() {
+        let token = Token::Identifier(ident.to_string());
+        if let Some(keyword) = token.try_ident_to_keyword() {
+            token_list.push(Token::Keyword(keyword));
+        } else {
+            token_list.push(token)
+        }
+        lexer_helper(&text[ident.len()..], token_list)
+    } else {
+        panic!()
+    };
+}
+
 mod test {
-    use super::*;
+    use super::{lexer, OpCode, Token};
 
     #[test]
     fn lexer_test() {
@@ -124,7 +129,6 @@ mod test {
                 Token::LeftParenthesis,
                 Token::RightParenthesis,
                 Token::Int(22),
-                Token::EOF
             ]
         )
     }
