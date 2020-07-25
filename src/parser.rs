@@ -142,47 +142,30 @@ mod test {
     fn parse_statement() {
         let ast = parser(
             "let x = 2*10\n\
-                      x + 5",
+                   x + 5",
         );
         match ast.statement_list.first().unwrap().clone() {
-            Statement::LetStatement(ident, expr) => {
+            Statement::LetStatement(ident, Expr::Op(op)) => {
                 assert_eq!(ident, "x");
-                match expr {
-                    Expr::Op(op) => match *op {
-                        Operation::Mul(expr1, expr2) => {
-                            match expr1 {
-                                Expr::Number(num) => assert_eq!(num, 2),
-                                _ => panic!(),
-                            }
-
-                            match expr2 {
-                                Expr::Number(num) => assert_eq!(num, 10),
-                                _ => panic!(),
-                            }
-                        }
-                        _ => panic!(),
-                    },
+                match *op {
+                    Operation::Mul(Expr::Number(num), Expr::Number(num2)) => {
+                        assert_eq!(num, 2);
+                        assert_eq!(num2, 10);
+                    }
                     _ => panic!(),
                 }
             }
-        }
-
-        match ast.expresion {
-            Expr::Op(op) => match *op {
-                Operation::Add(expr1, expr2) => {
-                    match expr1 {
-                        Expr::Identifier(ident) => assert_eq!("x", ident),
-                        _ => panic!(),
-                    }
-                    match expr2 {
-                        Expr::Number(num) => assert_eq!(num, 5),
-                        _ => panic!(),
-                    }
-                }
-                _ => panic!(),
-            },
             _ => panic!(),
         }
+
+        if let Expr::Op(op) = ast.expresion {
+            if let Operation::Add(Expr::Identifier(ident), Expr::Number(num)) = *op {
+                assert_eq!(ident, "x");
+                assert_eq!(num, 5);
+                return;
+            }
+        }
+        panic!();
     }
 
     #[test]
@@ -225,63 +208,17 @@ mod test {
     fn parse_test() {
         let ast = parser("1 + (2 - (3*(   5 /     32)))");
         let _i = Box::new(1);
-        match ast.expresion {
-            Expr::Op(op) => match *op {
-                Operation::Add(expr1, expr2) => {
-                    match expr1 {
-                        Expr::Number(num) => assert_eq!(num, 1),
-                        _ => panic!(),
+        if let Expr::Op(op) = ast.expresion {
+            if let Operation::Add(Expr::Number(1), Expr::Op(op)) = *op {
+                if let Operation::Sub(Expr::Number(2), Expr::Op(op)) = *op {
+                    if let Operation::Mul(Expr::Number(3), Expr::Op(op)) = *op {
+                        if let Operation::Div(Expr::Number(5), Expr::Number(32)) = *op {
+                            return;
+                        }
                     }
-
-                    match expr2 {
-                        Expr::Op(op) => match *op {
-                            Operation::Sub(expr1, expr2) => {
-                                match expr1 {
-                                    Expr::Number(num) => assert_eq!(num, 2),
-                                    _ => panic!(),
-                                }
-
-                                match expr2 {
-                                    Expr::Op(op) => match *op {
-                                        Operation::Mul(expr1, expr2) => {
-                                            match expr1 {
-                                                Expr::Number(num) => assert_eq!(num, 3),
-                                                _ => panic!(),
-                                            }
-
-                                            match expr2 {
-                                                Expr::Op(op) => match *op {
-                                                    Operation::Div(expr1, expr2) => {
-                                                        match expr1 {
-                                                            Expr::Number(num) => assert_eq!(num, 5),
-                                                            _ => panic!(),
-                                                        }
-
-                                                        match expr2 {
-                                                            Expr::Number(num) => {
-                                                                assert_eq!(num, 32)
-                                                            }
-                                                            _ => panic!(),
-                                                        }
-                                                    }
-                                                    _ => panic!(),
-                                                },
-                                                _ => panic!(),
-                                            }
-                                        }
-                                        _ => panic!(),
-                                    },
-                                    _ => panic!(),
-                                }
-                            }
-                            _ => panic!(),
-                        },
-                        _ => panic!(),
-                    };
                 }
-                _ => panic!(),
-            },
-            _ => panic!(),
+            }
         }
+        panic!();
     }
 }

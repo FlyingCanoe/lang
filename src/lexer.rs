@@ -113,15 +113,20 @@ fn lexe_ident(text: &str, mut token_list: Vec<Token>) -> Vec<Token> {
 }
 
 mod test {
-    use super::{lexer, OpCode, Token};
+    use super::{lexer, OpCode, Token,  Keyword};
 
     #[test]
     fn lexer_test() {
-        let list = lexer("1 +-*/()22");
+        let list = lexer("let x =1\n\
+                                         +-*/()22");
         assert_eq!(
             list,
             vec![
+                Token::Keyword(Keyword::Let),
+                Token::Identifier("x".to_string()),
+                Token::AssigmentSymbol,
                 Token::Int(1),
+                Token::NewLine,
                 Token::OpCode(OpCode::Add),
                 Token::OpCode(OpCode::Sub),
                 Token::OpCode(OpCode::Mul),
