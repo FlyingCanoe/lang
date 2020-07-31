@@ -1,113 +1,136 @@
 use std::collections::HashMap;
 use std::mem;
 
+use cranelift::codegen::Context;
 use cranelift::prelude::*;
 use cranelift_module::{Linkage, Module};
 use cranelift_simplejit::{SimpleJITBackend, SimpleJITBuilder};
 
-use crate::parser::{Ast, Statement};
-use crate::{Expr, Operation};
+use crate::parser::{Ast, Expresion, OperationType, Statement, VariableID};
 
-#[derive(Clone)]
-struct Context {
-    variable_list: HashMap<String, Value>,
+struct CodegenContext {
+    variable_list: HashMap<VariableID, Value>,
+    module: Module<SimpleJITBackend>,
+    int: Type,
 }
 
-impl Context {
+impl CodegenContext {
     fn new() -> Self {
-        Context {
+        let builder = SimpleJITBuilder::new(cranelift_module::default_libcall_names());
+        let module: Module<SimpleJITBackend> = Module::new(builder);
+        let mut cranelift_ctx: Context = module.make_context();
+        let int: Type = Type::int(64).unwrap();
+
+        cranelift_ctx
+            .func
+            .signature
+            .returns
+            .push(AbiParam::new(int));
+
+        CodegenContext {
             variable_list: HashMap::new(),
+            module,
+            int,
         }
     }
 
-    fn get_value(&self, identifier: &str) -> Value {
-        *self.variable_list.get(identifier).unwrap()
+    fn get_value(&self, id: VariableID) -> Value {
+        *self.variable_list.get(&id).unwrap()
     }
 
-    fn set_varible(mut self, identifier: String, value: Value) -> Self {
-        self.variable_list.insert(identifier, value);
-        self
+    fn set_variable_value(&mut self, id: VariableID, value: Value) {
+        self.variable_list.insert(id, value);
+    }
+
+    fn int(&self) -> Type {
+        self.int
+    }
+
+    fn get_finalized_function(mut self, cranelift_context: &mut Context) -> fn() -> isize {
+        let id = self
+            .module
+            .declare_function("eval", Linkage::Export, &cranelift_context.func.signature)
+            .unwrap();
+        self.module
+            .define_function(
+                id,
+                cranelift_context,
+                &mut codegen::binemit::NullTrapSink {},
+            )
+            .unwrap();
+        self.module.clear_context(cranelift_context);
+        self.module.finalize_definitions();
+        let code = self.module.get_finalized_function(id);
+        unsafe { mem::transmute::<_, fn() -> isize>(code) }
     }
 }
 
 impl Statement {
-    fn translate(self, ctx: Context, builder: &mut FunctionBuilder, int: Type) -> Context {
+    fn translate(self, ctx: &mut CodegenContext, builder: &mut FunctionBuilder) {
         match self {
-            Statement::LetStatement(identifier, expresion) => ctx
-                .clone()
-                .set_varible(identifier, expresion.translate(builder, int, &ctx)),
+            Statement::LetStatement(identifier, expresion) => {
+                let value = expresion.translate(ctx, builder);
+                ctx.set_variable_value(identifier, value);
+            }
         }
     }
 }
 
 impl Ast {
     pub fn run(self) -> isize {
-        let builder = SimpleJITBuilder::new(cranelift_module::default_libcall_names());
-        let mut module: Module<SimpleJITBackend> = Module::new(builder);
-        let mut ctx = module.make_context();
-        let int = module.target_config().pointer_type();
+        let func = self.build();
+        func()
+    }
+    pub fn build(self) -> fn() -> isize {
+        let mut ctx = CodegenContext::new();
+        let mut cranelift_context = Context::new();
+        cranelift_context
+            .func
+            .signature
+            .returns
+            .push(AbiParam::new(ctx.int()));
+        let mut function_context = FunctionBuilderContext::new();
+        let mut builder = FunctionBuilder::new(&mut cranelift_context.func, &mut function_context);
+        let block = builder.create_block();
+        builder.switch_to_block(block);
 
-        let mut function_builder = FunctionBuilderContext::new();
-        let mut builder = FunctionBuilder::new(&mut ctx.func, &mut function_builder);
-
-        let entry_block = builder.create_block();
-
-        builder.switch_to_block(entry_block);
-        builder.seal_block(entry_block);
-
-        let lang_ctx = self
-            .clone()
+        self.clone()
             .get_statement_list()
             .into_iter()
-            .fold(Context::new(), |ctx, statment| {
-                statment.translate(ctx, &mut builder, int)
-            });
-        let value = self.get_expresion().translate(&mut builder, int, &lang_ctx);
+            .for_each(|statement| statement.translate(&mut ctx, &mut builder));
+
+        let value = self.get_expresion().translate(&mut ctx, &mut builder);
         builder.ins().return_(&[value]);
-
-        ctx.func.signature.returns.push(AbiParam::new(int));
-
-        let id = module
-            .declare_function("eval", Linkage::Export, &ctx.func.signature)
-            .unwrap();
-        module
-            .define_function(id, &mut ctx, &mut codegen::binemit::NullTrapSink {})
-            .unwrap();
-        module.clear_context(&mut ctx);
-        module.finalize_definitions();
-        let code = module.get_finalized_function(id);
-        let compile_fonction = unsafe { mem::transmute::<_, fn() -> isize>(code) };
-        compile_fonction()
+        ctx.get_finalized_function(&mut cranelift_context)
     }
 }
 
-impl Expr {
-    fn translate(&self, builder: &mut FunctionBuilder, int: Type, ctx: &Context) -> Value {
+impl Expresion {
+    fn translate(self, ctx: &mut CodegenContext, builder: &mut FunctionBuilder) -> Value {
+        let int = ctx.int;
         match self {
-            Expr::Identifier(ident) => ctx.get_value(ident),
-            Expr::Number(num) => builder.ins().iconst(int, *num as i64),
-            Expr::Op(op) => match op.as_ref() {
-                Operation::Add(term1, term2) => {
-                    let value1 = term1.translate(builder, int, ctx);
-                    let value2 = term2.translate(builder, int, ctx);
-                    builder.ins().iadd(value1, value2)
-                }
-                Operation::Sub(term1, term2) => {
-                    let value1 = term1.translate(builder, int, ctx);
-                    let value2 = term2.translate(builder, int, ctx);
-                    builder.ins().isub(value1, value2)
-                }
-                Operation::Mul(term1, term2) => {
-                    let value1 = term1.translate(builder, int, ctx);
-                    let value2 = term2.translate(builder, int, ctx);
-                    builder.ins().imul(value1, value2)
-                }
-                Operation::Div(term1, term2) => {
-                    let value1 = term1.translate(builder, int, ctx);
-                    let value2 = term2.translate(builder, int, ctx);
-                    builder.ins().sdiv(value1, value2)
-                }
-            },
+            Expresion::Variable(id) => ctx.get_value(id),
+            Expresion::Integer(num) => builder.ins().iconst(int, num as i64),
+            Expresion::Op(optype, terms) => {
+                let (left_term, right_term) = *terms;
+                let left_value = left_term.translate(ctx, builder);
+                let right_value = right_term.translate(ctx, builder);
+                translate_operation(optype, left_value, right_value, builder)
+            }
         }
+    }
+}
+
+fn translate_operation(
+    optype: OperationType,
+    left_value: Value,
+    right_value: Value,
+    builder: &mut FunctionBuilder,
+) -> Value {
+    match optype {
+        OperationType::Addition => builder.ins().iadd(left_value, right_value),
+        OperationType::Subtraction => builder.ins().isub(left_value, right_value),
+        OperationType::Multiplication => builder.ins().imul(left_value, right_value),
+        OperationType::Division => builder.ins().udiv(left_value, right_value),
     }
 }

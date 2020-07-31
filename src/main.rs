@@ -1,4 +1,4 @@
-use parser::{parser, Expr, Operation};
+use parser::parser;
 
 mod compile;
 mod lexer;
@@ -8,6 +8,7 @@ fn main() {
     let ast = parser(
         "let x = 10 * 10 \n\
                x * 2",
-    );
+    )
+    .unwrap();
     dbg!(ast.run());
 }

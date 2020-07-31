@@ -1,7 +1,13 @@
 use std::str::FromStr;
 
+#[derive(Debug, Copy, Clone)]
+pub enum Error {
+    UnknownToken,
+    InvalidInteger,
+}
+
 #[derive(Debug, Copy, Clone, PartialEq)]
-pub enum OpCode {
+pub enum Operator {
     Add,
     Sub,
     Mul,
@@ -9,14 +15,15 @@ pub enum OpCode {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// Token that are produce by the lexer. See [`lexer`](fn.lexer.html) for more information.
 pub enum Token {
-    Int(isize),
+    Integer(u64),
     Keyword(Keyword),
     LeftParenthesis,
     RightParenthesis,
     AssigmentSymbol,
     Identifier(String),
-    OpCode(OpCode),
+    OpCode(Operator),
     NewLine,
 }
 
@@ -25,115 +32,155 @@ pub enum Keyword {
     Let,
 }
 
-impl Token {
-    /// a helper function that try that convert a ident token to a keyword token if it actually correspond to a keyword.
-    /// It will return None if the conversion is not possible and the token is not already a keyword
-    fn try_ident_to_keyword(&self) -> Option<Keyword> {
-        return if let Token::Identifier(string) = self {
-            let text = string.as_str();
-
-            match text {
-                "let" => Some(Keyword::Let),
-                _ => None,
-            }
-        } else if let Token::Keyword(keyword) = self {
-            Some(*keyword)
-        } else {
-            None
-        };
-    }
-}
-
-pub fn lexer(text: &str) -> Vec<Token> {
+/// Tokenize the given code into a vec of [`Token`](enum.Token.html) with the following lexical grammar.
+/// ***
+/// Lexical Grammar
+/// ---
+/// - Token::OpCode(Operator::Add) = "+"
+/// - Token::OpCode(Operator::Sub) = "-"
+/// - Token::OpCode(Operator::Mul) = "*"
+/// - Token::OpCode(Operator::Div) = "/"
+/// - Token::LeftParenthesis = "("
+/// - Token::RightParenthesis = ")"
+/// - Token::AssigmentSymbol = "="
+/// - Token::NewLine = "\n"
+/// - Token::Integer = (is_ascii_digit() == true)+
+/// - Token::Keyword(Keyword::Let) = "let"
+/// - Token::Identifier = (is_alphanumeric() == true)+
+/// - _ = (is_whitespace())
+pub fn lexer(text: &str) -> Result<Vec<Token>, Error> {
     lexer_helper(text, vec![])
 }
 
-fn lexer_helper(text: &str, mut token_list: Vec<Token>) -> Vec<Token> {
-    match text.chars().next() {
-        Some(ch) => match ch {
-            '+' => {
-                token_list.push(Token::OpCode(OpCode::Add));
-                lexer_helper(&text[1..], token_list)
-            }
-            '-' => {
-                token_list.push(Token::OpCode(OpCode::Sub));
-                lexer_helper(&text[1..], token_list)
-            }
-            '*' => {
-                token_list.push(Token::OpCode(OpCode::Mul));
-                lexer_helper(&text[1..], token_list)
-            }
-            '/' => {
-                token_list.push(Token::OpCode(OpCode::Div));
-                lexer_helper(&text[1..], token_list)
-            }
-            '(' => {
-                token_list.push(Token::LeftParenthesis);
-                lexer_helper(&text[1..], token_list)
-            }
-            ')' => {
-                token_list.push(Token::RightParenthesis);
-                lexer_helper(&text[1..], token_list)
-            }
-            '=' => {
-                token_list.push(Token::AssigmentSymbol);
-                lexer_helper(&text[1..], token_list)
-            }
-            _ if ch.is_ascii_digit() => lexe_number(&text, token_list),
-            _ if ch.is_alphanumeric() => lexe_ident(text, token_list),
-            '\n' => {
-                token_list.push(Token::NewLine);
-                lexer_helper(&text[1..], token_list)
-            }
-            _ => lexer_helper(&text[1..], token_list),
-        },
-        None => token_list,
-    }
-}
+/// ***
+/// Lexical Grammar
+/// ---
+/// - Token::OpCode(Operator::Add) = "+"
+/// - Token::OpCode(Operator::Sub) = "-"
+/// - Token::OpCode(Operator::Mul) = "*"
+/// - Token::OpCode(Operator::Div) = "/"
+/// - Token::LeftParenthesis = "("
+/// - Token::RightParenthesis = ")"
+/// - Token::AssigmentSymbol = "="
+/// - Token::NewLine = "\n"
+/// - Token::Int = (is_ascii_digit() == true)+
+/// - Token::Keyword(Keyword::Let) = "let"
+/// - Token::Identifier = (is_alphanumeric() == true)+
+/// - _ = (is_whitespace())
+fn lexer_helper(text: &str, mut token_list: Vec<Token>) -> Result<Vec<Token>, Error> {
+    let ch = match text.chars().next() {
+        Some(ch) => ch,
+        None => return Ok(token_list),
+    };
 
-fn lexe_number(text: &str, mut token_list: Vec<Token>) -> Vec<Token> {
-    let num = text.chars().take_while(|ch| ch.is_ascii_digit()).count();
-    let token = isize::from_str(text.split_at(num).0).unwrap();
-    token_list.push(Token::Int(token));
-    lexer_helper(&text[num..], token_list)
-}
-
-fn lexe_ident(text: &str, mut token_list: Vec<Token>) -> Vec<Token> {
-    return if let Some(ident) = text.split_whitespace().next() {
-        let token = Token::Identifier(ident.to_string());
-        if let Some(keyword) = token.try_ident_to_keyword() {
-            token_list.push(Token::Keyword(keyword));
-        } else {
-            token_list.push(token)
-        }
-        lexer_helper(&text[ident.len()..], token_list)
+    return if let Some(token) = tokenize_operator(ch) {
+        token_list.push(token);
+        lexer_helper(&text[1..], token_list)
+    } else if let Some(token) = tokenize_symbol(ch) {
+        token_list.push(token);
+        lexer_helper(&text[1..], token_list)
+    } else if let Some((token, integer_len)) = tokenize_integer(text)? {
+        token_list.push(token);
+        lexer_helper(&text[integer_len..], token_list)
+    } else if let Some(token) = tokenize_keyword(text) {
+        token_list.push(token);
+        lexer_helper(&text[3..], token_list)
+    } else if let Some((token, ident_len)) = tokenize_identifier(text) {
+        token_list.push(token);
+        lexer_helper(&text[ident_len..], token_list)
+    } else if ch.is_whitespace() {
+        lexer_helper(&text[1..], token_list)
     } else {
-        panic!()
+        Err(Error::UnknownToken)
     };
 }
 
+/// - Token::OpCode(Operator::Add) = "+"
+/// - Token::OpCode(Operator::Sub) = "-"
+/// - Token::OpCode(Operator::Mul) = "*"
+/// - Token::OpCode(Operator::Div) = "/"
+fn tokenize_operator(ch: char) -> Option<Token> {
+    match ch {
+        '+' => Some(Token::OpCode(Operator::Add)),
+        '-' => Some(Token::OpCode(Operator::Sub)),
+        '*' => Some(Token::OpCode(Operator::Mul)),
+        '/' => Some(Token::OpCode(Operator::Div)),
+        _ => None,
+    }
+}
+
+/// - Token::LeftParenthesis = "("
+/// - Token::RightParenthesis = ")"
+/// - Token::AssigmentSymbol = "="
+/// - Token::NewLine = "\n"
+fn tokenize_symbol(ch: char) -> Option<Token> {
+    match ch {
+        '(' => Some(Token::LeftParenthesis),
+        ')' => Some(Token::RightParenthesis),
+        '=' => Some(Token::AssigmentSymbol),
+        '\n' => Some(Token::NewLine),
+        _ => None,
+    }
+}
+
+/// Token::Int = (is_ascii_digit() == true)+
+fn tokenize_integer(text: &str) -> Result<Option<(Token, usize)>, Error> {
+    let num = text.chars().take_while(|ch| ch.is_ascii_digit()).count();
+    if num == 0 {
+        return Ok(None);
+    }
+    match u64::from_str(&text[..num]) {
+        Ok(int) => Ok(Some((Token::Integer(int), num))),
+        Err(_) => Err(Error::InvalidInteger),
+    }
+}
+
+/// Token::Keyword(Keyword::Let) = "let"
+fn tokenize_keyword(text: &str) -> Option<Token> {
+    if text.starts_with("let") {
+        Some(Token::Keyword(Keyword::Let))
+    } else {
+        None
+    }
+}
+
+/// Token::Identifier = (is_alphanumeric() == true)+
+fn tokenize_identifier(text: &str) -> Option<(Token, usize)> {
+    let identifier: String = text.chars().take_while(|ch| ch.is_alphanumeric()).collect();
+    let len = identifier.len();
+    if len != 0 {
+        Some((Token::Identifier(identifier), len))
+    } else {
+        None
+    }
+}
+
 mod test {
-    use super::{lexer, OpCode, Token,  Keyword};
+    use super::{lexer, Keyword, Operator, Token};
 
     #[test]
     fn lexer_test() {
-        let list = lexer("let x =1\n\
-                                         +-*/()22");
+        let list = lexer(
+            "let x =1\n\
+                  +-*/()22",
+        )
+        .unwrap();
+
         assert_eq!(
             list,
             vec![
                 Token::Keyword(Keyword::Let),
                 Token::Identifier("x".to_string()),
                 Token::AssigmentSymbol,
-                Token::Int(1),
+                Token::Integer(1),
                 Token::NewLine,
-                Token::OpCode(OpCode::Add),
-                Token::OpCode(OpCode::Sub),
-                Token::OpCode(OpCode::Mul),
-                Token::OpCode(OpCode::Div),
+                Token::OpCode(Operator::Add),
+                Token::OpCode(Operator::Sub),
+                Token::OpCode(Operator::Mul),
+                Token::OpCode(Operator::Div),
                 Token::LeftParenthesis,
                 Token::RightParenthesis,
-                Token::Int(22),
+                Token::Integer(22),
             ]
         )
     }
