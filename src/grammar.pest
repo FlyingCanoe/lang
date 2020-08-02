@@ -1,0 +1,24 @@
+//
+// Created by intellij-pest on 2020-08-02
+// grammar
+// Author: flyingcanoe
+//
+
+Ast = { SOI ~ Statement* ~ Expresion ~ EOI }
+Statement = ${ "let" ~ WHITESPACE* ~ Identifier ~ WHITESPACE* ~ "=" ~ WHITESPACE* ~ Expresion ~ Indentation* ~ NEWLINE }
+Identifier = @{LETTER+}
+Expresion = { Operation | Term }
+Operation = {Term ~ Operator ~ Expresion}
+Term = {Lateral | Identifier | NestedExpresion}
+Lateral = @{ASCII_DIGIT+}
+NestedExpresion = {"(" ~ Expresion ~ ClosingParenthesis}
+ClosingParenthesis = _{")"}
+
+Operator = {Addition | Subtraction | Multiplication | Division}
+    Addition        = {"+"}
+    Subtraction     = {"-"}
+    Multiplication  = {"*"}
+    Division        = {"/"}
+
+WHITESPACE = _{ Indentation | NEWLINE }
+Indentation = _{" " | "\t"}

@@ -111,7 +111,7 @@ impl Expresion {
         match self {
             Expresion::Variable(id) => ctx.get_value(id),
             Expresion::Integer(num) => builder.ins().iconst(int, num as i64),
-            Expresion::Op(optype, terms) => {
+            Expresion::Operation(optype, terms) => {
                 let (left_term, right_term) = *terms;
                 let left_value = left_term.translate(ctx, builder);
                 let right_value = right_term.translate(ctx, builder);
